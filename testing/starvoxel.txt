@@ -11,17 +11,19 @@
     --add shape generators and seperate draw commands
     --add vector and angle offsets
     --add multiple chip detection to avoid issues
+    --if we can't change vertexes of props during runtime then we will be unable to properly optimize meshes, as broken surfaces could reveal removed faces
 --Misc stuff ^
-    --every voxel is seperate, needs to be mesh combined ASAP 
-    --voxels can occupie the same space   
+    --every voxel is seperate, needs to be mesh combined ASAP if possible 
+    --voxels can occupie the same space
+    --can't change vertex data of voxel unless we respawn it
 --Problems and bugs ^
 local UPS=120
 local next_frame=0
 local fps_delta=1/UPS 
-local Debug=true
+local Debug=false
 
 if SERVER then
-    local scale=1
+    local scale=8
     local static={} --Do we really need this?
     local entities={}
     local ents=requiredir("starvoxels/ents")
@@ -62,6 +64,8 @@ if SERVER then
         net.send(ply)
     end
     hook.add("ClientInitialized","",function(ply)
+        
+        if ply!=owner() then return end --Owner only for now
     
         cl_send("cl_initStatic",static,ply)
         cl_cursor=prop.createCustom(chip():getPos()-Vector(0,0,100),Angle(),voxel(Vector(0,0,0),nil,nil,false),true)
@@ -71,9 +75,9 @@ if SERVER then
             Keys=net.readTable()
         end)
         
-        hook.add("think",owner():getName(),function() --Owner only for now
+        hook.add("think",player():getName(),function() --Owner only for now
             local now=timer.systime()
-            local aimTrace=owner():getEyeTrace()
+            local aimTrace=player():getEyeTrace()
             
             hook.add("KeyPress","",function(ply,key)
                 if key!=2048||!Keys[15] then
@@ -129,6 +133,9 @@ else
         end
     end)
     hook.add("think","",function()
+        
+        if player()!=owner() then return end --Owner only for now
+        
         local now=timer.systime()
         
         if next_frame<now then
