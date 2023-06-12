@@ -1,0 +1,151 @@
+--@name StarVoxels Voxel Test
+--@author Elias & SugarCube
+--@includedir starvoxels/ents
+--This test chip aims to create voxels, along with many different optimzations to create a functional system before constructing the final version.
+    --4100 entries is the soft limit for players on default settings. While higher is possible, it's not consistent 
+    --4850 entries is the soft limit for servers on default settings.
+--Notes ^    
+    --store voxels in a static/entities system
+    --add queue system
+    --material and hardness(maybe) based on color
+    --add shape generators and seperate draw commands
+    --add vector and angle offsets
+    --add multiple chip detection to avoid issues
+--Misc stuff ^
+    --every voxel is seperate, needs to be mesh combined ASAP 
+    --voxels can occupie the same space   
+--Problems and bugs ^
+local UPS=120
+local next_frame=0
+local fps_delta=1/UPS 
+local Debug=true
+
+if SERVER then
+    local scale=1
+    local static={} --Do we really need this?
+    local entities={}
+    local ents=requiredir("starvoxels/ents")
+    
+    function voxel(vec,rgba,index,object)
+        local vector=vec*scale
+        local convexes={{
+            Vector(1,1,1)*scale,Vector(1,1,-1)*scale,Vector(-1,1,-1)*scale,Vector(-1,1,1)*scale,
+            Vector(1,-1,1)*scale,Vector(1,-1,-1)*scale,Vector(-1,-1,-1)*scale,Vector(-1,-1,1)*scale,}} 
+        if object then
+            table.add(static,
+                {
+                    index={ 
+                        xyz=vec,
+                        rgb=rgba,
+                    }
+                }
+            )
+        end
+        return convexes --may need localization for rotation in future (worldtolocal)
+    end
+    function voxelLoad(data)
+        for k,v in ipairs(data)do
+            local xyz=data[k]["xyz"]
+            local rgb=data[k]["rgb"]
+            
+            b=prop.createCustom(chip():getPos()+xyz*scale,Angle(),voxel(xyz,rgb,k,true),true) --add more rotation stuff
+            static[k]["ent"]=b
+            b:setColor(rgb)
+        end
+        if Debug then print("Debug >: Loaded "..table.count(static).." voxels from save data. Recorded to console") printConsole(table.toString(static)) end
+    end
+    voxelLoad(test())--preload test
+    chip():setColor(Color(0,0,0,0))
+    function cl_send(id,data,ply)
+        net.start(id)
+        net.writeTable(data)
+        net.send(ply)
+    end
+    hook.add("ClientInitialized","",function(ply)
+    
+        cl_send("cl_initStatic",static,ply)
+        cl_cursor=prop.createCustom(chip():getPos()-Vector(0,0,100),Angle(),voxel(Vector(0,0,0),nil,nil,false),true)
+        local cursorID=cl_cursor:entIndex()
+        local Keys
+        net.receive("Keys",function()
+            Keys=net.readTable()
+        end)
+        
+        hook.add("think",owner():getName(),function() --Owner only for now
+            local now=timer.systime()
+            local aimTrace=owner():getEyeTrace()
+            
+            hook.add("KeyPress","",function(ply,key)
+                if key!=2048||!Keys[15] then
+                    return
+                end
+                if Keys[81] then --add color damping for block selection
+                    aimTrace.Entity:remove()
+                else
+                    local xyz=cl_cursor:getPos()
+                    local ang=cl_cursor:getAngles()
+                    local rgb=Color(255,0,0)
+                    local newInd=table.count(static)+1
+                            
+                    newVoxel=prop.createCustom(xyz,ang,voxel(xyz,rgb,newInd,true),true)
+                    static[newInd]["ent"]=newVoxel
+                    newVoxel:setColor(rgb)
+                end
+                
+            end)
+            if next_frame<now then 
+                local entID=aimTrace.Entity:entIndex()
+                local xyz=aimTrace.Entity:getPos()
+                
+                next_frame=now+fps_delta                                
+                if !Keys[15]||(Keys[15] and Keys[81]) then
+                    cl_cursor:setPos(chip():getPos()-Vector(0,0,100))
+                    cl_cursor:setFrozen(true)
+                    return
+                end
+                if entID!=cursorID and entID!=0 then --Add check for max rotation
+                    cl_cursor:setPos(xyz+aimTrace.HitNormal*scale*2)
+                    cl_cursor:setAngles(aimTrace.Entity:getAngles())
+                end
+            end
+        end)
+    end)
+    --[[
+    find.allPlayers(function(ply)
+        cl_send("cl_initStatic",static,ply)
+    end)
+    ]]
+else
+    local cl_static={}
+    
+    local default=material.create("UnlitGeneric")
+    default:setInt("$flags",0)
+    
+    net.receive("cl_initStatic",function()
+        cl_static=net.readTable()
+        if Debug then print("Debug >: Materials disabled.") return end
+        for k,v in ipairs(cl_static)do
+            cl_static[k]["ent"]:setMeshMaterial(default)
+        end
+    end)
+    hook.add("think","",function()
+        local now=timer.systime()
+        
+        if next_frame<now then
+            next_frame=now+fps_delta
+            net.start("Keys")
+            net.writeTable(
+                {
+                    [15]=(input.isKeyDown(15)and!input.isMouseDown(107)),
+                    [81]=(input.isKeyDown(81))
+                }
+            )
+            net.send()
+        end
+    end)
+    --[[
+    net.receive("cl_cursor",function()
+        cl_cursor=net.readEntity()
+    end)
+    ]]
+end
