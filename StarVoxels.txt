@@ -1,0 +1,170 @@
+--@name StarVoxels
+--@author Elias & SugarCube
+--@includedir starvoxels/ents
+
+--feature: only the owner and in the future whitelisted people, can create new entities
+--bug: some people error on getholdtype, add a function that bypasses/voids erorrs
+--todo: switch out getEyeTrace for line, to filter your's and other people's cursors
+--todo: loading by chunks
+--todo: subdivision by chunk package, such as taking one big voxel and dividing it
+--todo: don't place voxels inside bounding boxes or move them upwards, to avoid physics problems and is generally a nice touch
+--bug: holder type breaks when someone is making voxels and dies
+--bug: voxels sometimes spawn after forward functions, casuing them to miss functions such as setColor and use metatable data
+
+--TODO FIRST: optimze functions and methods, all done very fast and may not be done the best way possible
+
+if SERVER then
+    local scale=5
+    local entities={}
+    local ents=requiredir("starvoxels/ents")
+    local data={}
+    local voxEnt=class("voxEnt")
+
+    function voxel(scale)
+        return{{
+            Vector(1,1,1)*scale,Vector(1,1,-1)*scale,Vector(-1,1,-1)*scale,Vector(-1,1,1)*scale,
+            Vector(1,-1,1)*scale,Vector(1,-1,-1)*scale,Vector(-1,-1,-1)*scale,Vector(-1,-1,1)*scale
+        }} 
+    end
+    function voxEnt:initialize(pos,angles,scale,voxels,frozen)
+        self.scale=scale
+        self.voxels=voxels
+        self.data={}
+        
+        timer.create("loadingVoxels",#voxels/4+0.1,1,function() --weird ass method
+            net.start("cl_materialInit")
+            net.writeTable(self.data)
+            net.send()
+        end)
+        for k,v in pairs(voxels) do
+            local xyz=voxels[k]["xyz"]
+            local rgb=voxels[k]["rgb"]
+            
+            timer.simple(k/4,function()
+                self.data[k]={
+                    xyz,
+                    rgb,
+                    ent=prop.createCustom(pos+xyz*scale,Angle(),voxel(scale),frozen)
+                }
+                self.data[k]["ent"]:setColor(rgb)
+                self.data[k]["ent"].entGroup=self
+            end)
+        end
+        return self
+    end
+    
+    local test=voxEnt:new(chip():getPos(),Angle(),scale,box(5),true)--load entity test
+    
+    net.receive("cl_keys",function(len,ply)
+        local keys=net.readTable()
+        local plyName=ply:getName()
+        
+        if timer.exists("loadingVoxels") then return end
+        if keys[15] then
+            local plyTrace=ply:getEyeTrace()
+            local entGroup=plyTrace.Entity.entGroup
+            data[plyName]=true
+            
+            if !data["cursor"..plyName] then
+                data["cursor"..plyName]=hologram.create(chip():getPos()-Vector(0,0,100),Angle(),"models/starfall/holograms/box.mdl",Vector(scale+scale))
+                data["cursor"..plyName]:setMaterial("models/debug/debugwhite")
+            end
+            hook.add("think","cursor_"..plyName,function()
+                plyTrace=ply:getEyeTrace()
+                
+                if keys[81] then
+                    if plyTrace.Entity:entIndex()==0 then return end
+                    if !data["savedEntity"..plyName] then
+                        data["savedEntity"..plyName]=plyTrace.Entity
+                        data["savedColor"..plyName]=data["savedEntity"..plyName]:getColor()
+                    end
+                    if data["savedEntity"..plyName] and data["savedEntity"..plyName]:isValid() then
+                        if data["savedEntity"..plyName]!=plyTrace.Entity then
+                            data["savedEntity"..plyName]:setColor(data["savedColor"..plyName])
+                            data["savedEntity"..plyName]=plyTrace.Entity
+                            data["savedColor"..plyName]=data["savedEntity"..plyName]:getColor()
+                        else
+                            local color=data["savedColor"..plyName]
+                    
+                            plyTrace.Entity:setColor(Color(color[1],color[2],color[3],120))
+                        end
+                    end
+                    data["cursor"..plyName]:setPos(chip():getPos()-Vector(0,0,100))
+                    data["cursor"..plyName]:setColor(Color(0,0,0,0))
+                    
+                    if !plyTrace.Entity then return end
+                else
+                    local color=plyTrace.Entity:getColor()
+                    
+                    if plyTrace.Entity:entIndex()==data["cursor"..plyName]:entIndex() then return end
+                    data["cursor"..plyName]:setPos(plyTrace.Entity:getPos()+plyTrace.HitNormal*scale*2)
+                    data["cursor"..plyName]:setAngles(plyTrace.Entity:getAngles())
+                    data["cursor"..plyName]:setColor(Color(color[1],color[2],color[3],120))
+                    
+                    if data["savedEntity"..plyName] and data["savedEntity"..plyName]:isValid() then
+                        data["savedEntity"..plyName]:setColor(data["savedColor"..plyName])
+                    end
+                end
+            end)
+            if keys[107] then
+                if keys[81] then
+                    plyTrace.Entity:remove()
+                    for k,v in pairs(entGroup.data) do
+                        if entGroup.data[k]["ent"]==plyTrace.Entity then
+                            table.remove(entGroup.data,k)
+                        end
+                    end
+                else
+                    local rgb=data["cursor"..plyName]:getColor()
+                    
+                    if !entGroup then return end
+                    entGroup.data[#entGroup.data+1]={
+                        data["cursor"..plyName]:getPos(),
+                        rgb,
+                        ent=prop.createCustom(data["cursor"..plyName]:getPos(),data["cursor"..plyName]:getAngles(),voxel(scale),true)
+                    }
+                    entGroup.data[#entGroup.data]["ent"]:setColor(rgb)
+                    entGroup.data[#entGroup.data]["ent"].entGroup=entGroup
+                end  
+            end
+        elseif(data[plyName]) then
+            data[plyName]=false
+            data["cursor"..plyName]:remove()
+            data["cursor"..plyName]=nil
+
+            hook.remove("think","cursor_"..plyName)
+        end
+    end)
+else  
+    local cachedVoxels={} 
+    local lastKey={}
+    local keys
+    
+    local solid=material.create("UnlitGeneric")
+    solid:setInt("$flags",0)
+    
+    net.receive("cl_materialInit",function()
+        cachedVoxels=net.readTable()
+        
+        for k,v in pairs(cachedVoxels) do
+            cachedVoxels[k]["ent"]:setMeshMaterial(solid)
+        end
+    end)
+    hook.add("think",player():getName(),function()
+        local entity=player():getEyeTrace().Entity
+        
+        keys={
+            [15]=input.isKeyDown(15),
+            [81]=input.isKeyDown(81),
+            [107]=input.isMouseDown(107)
+        }
+        
+        if entity:isValid() and ((entity:entIndex()==0 and player()!=owner()) or entity:getClass()=="starfall_prop") and player():getActiveWeapon():getHoldType()=="normal" and table.toString(keys)!=table.toString(lastKey) then
+            lastKey=keys
+            
+            net.start("cl_keys")
+            net.writeTable(keys) --add check if active weapon turns false but table is still active later
+            net.send()
+        end    
+    end)
+end
